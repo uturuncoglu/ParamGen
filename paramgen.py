@@ -4,6 +4,7 @@ import re
 from copy import deepcopy
 import logging
 import subprocess
+import collections
 
 try:
     from paramgen_utils import is_logical_expr, is_formula, has_unexpanded_var
@@ -510,13 +511,15 @@ class ParamGen:
         self._data = deepcopy(self._original_data)
         self._reduced = False
 
-    def write_nml(self, output_path):
+    def write_nml(self, output_path, append=False):
         """Writes the reduced data in Fortran namelist format if the data conforms to the format.
 
         Parameters
         ----------
         output_path: str object
             Path to the namelist file to be created.
+        append: logical object
+            Flag to append to the existing file. Default value is False.
         """
 
         assert (
@@ -536,7 +539,10 @@ class ParamGen:
                     assert isinstance(val, str), "Invalid data format"
 
         # write the namelist file
-        with open(output_path, "w") as nml:
+        open_mode = 'w'
+        if append:
+            open_mode = 'a'
+        with open(output_path, open_mode) as nml:
             for module in self._data:
                 nml.write("&{}\n".format(module))
                 for var in self._data[module]:
@@ -544,3 +550,68 @@ class ParamGen:
                     if val is not None:
                         nml.write("    {} = {}\n".format(var, val))
                 nml.write("/\n\n")
+
+    def write_nuopc(self, output_path, append=False):
+        """Writes the reduced data in ESMF config file format if the data conforms to the format.
+
+        Parameters
+        ----------
+        output_path: str object
+            Path to the namelist file to be created.
+        append: logical object
+            Flag to append to the existing file. Default value is False.
+        """
+
+        assert (
+            self._reduced
+        ), "The data may be written only after the reduce method is called."
+
+        # check *schema* after reduction
+        for grp, var in self.data.items():
+            # grp is the namelist module name, while var is a dictionary corresponding to the vars in namelist
+            assert isinstance(grp, str), "Invalid data format"
+            assert isinstance(var, dict), "Invalid data format"
+            for vls in var.values():
+                # vnm is the var name, and vls is its values element
+                assert isinstance(vls, dict), "Invalid data format"
+                for val in vls:
+                    # val is a value in the values dict
+                    assert isinstance(val, str), "Invalid data format"
+
+        # write the namelist file
+        open_mode = 'w'
+        if append:
+            open_mode = 'a'
+        with open(output_path, open_mode) as nuopc:
+            for module in self._data:
+                indent = ''
+                seperator = ': '
+                if 'no_group' != module.strip().lower():
+                    nuopc.write("{}::\n".format(module))
+                    indent = '  '
+                    seperator = ' = '
+
+                # populate dictionary
+                my_dict = collections.defaultdict(dict)
+                for var in self._data[module]:
+                    if (isinstance(self._data[module][var]["values"], (list))):
+                        val = ' '.join(self._data[module][var]["values"])
+                        my_dict['00'][var] = val
+                    else:
+                        vals = str(self._data[module][var]["values"]).strip().split(',')
+                        if len(vals) > 1:
+                            counter = 1
+                            for val in vals:
+                                my_dict['{:02d}'.format(counter)]['{}{:02d}'.format(var, counter)] = val
+                                counter = counter+1
+                        else:
+                            my_dict['00'][var] = vals[0]
+
+                # write information from dictionary to file
+                for k1 in my_dict.keys():
+                    for k2, v2 in my_dict[k1].items():
+                        if v2 is not None:
+                            nuopc.write("{}{}{}{}\n".format(indent, k2.strip(), seperator, v2.strip()))
+
+                if 'no_group' != module.strip().lower():
+                    nuopc.write("::\n")
